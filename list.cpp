@@ -1,65 +1,73 @@
-// list_explorer_tabs.cpp  (MinGW-w64 / C++17, 64bit推奨)
-// g++ list.cpp -std=c++17 -O0 -lole32 -loleaut32 -lshell32 -lshlwapi -luuid
-#define UNICODE
-#define _UNICODE
+// list_explorer_tabs_mb.cpp (MinGW-w64 / C++17)
+// g++ list_explorer_tabs_mb.cpp -std=c++17 -O0 -lole32 -loleaut32 -lshell32 -lshlwapi -luuid
+
+// ★ UNICODE 定義を削除してマルチバイト版にする
+#undef UNICODE
+#undef _UNICODE
 #define _WIN32_IE 0x0700
+
 #include <windows.h>
 #include <shlobj.h>
 #include <shobjidl.h>
 #include <shlwapi.h>
 #include <exdisp.h>
-#include <servprov.h>   // IServiceProvider
-#include <shlguid.h>    // SID_STopLevelBrowser
+#include <servprov.h>
+#include <shlguid.h>
 #include <cstdio>
 #include <string>
 
 template<class T> static void SafeRelease(T*& p){ if(p){ p->Release(); p=nullptr; } }
 
-static std::wstring UrlToPath(const std::wstring& url){
-    if (url.rfind(L"file://", 0) == 0){
+// URL からパスへ変換（マルチバイト）
+static std::string UrlToPath(const std::string& url){
+    if (url.rfind("file://", 0) == 0){
         DWORD cch = (DWORD)url.size() + 1;
-        std::wstring path(cch, L'\0');
-        if (S_OK == PathCreateFromUrlW(url.c_str(), path.data(), &cch, 0)){
+        std::string path(cch, '\0');
+        if (S_OK == PathCreateFromUrlA(url.c_str(), path.data(), &cch, 0)){
             path.resize(cch ? cch - 1 : 0);
             return path;
         }
     }
-    return L"";
+    return "";
 }
 
-static std::wstring PidlToParsingName(PCIDLIST_ABSOLUTE pidl, bool* isFS){
-    PWSTR psz = nullptr;
-    if (SUCCEEDED(SHGetNameFromIDList(pidl, SIGDN_FILESYSPATH, &psz)) && psz){
-        std::wstring s(psz); CoTaskMemFree(psz);
+// PIDL からパス名（ANSI）を取得
+static std::string PidlToParsingName(PCIDLIST_ABSOLUTE pidl, bool* isFS){
+    CHAR sz[MAX_PATH];
+    if (SHGetPathFromIDListA(pidl, sz)){
         if (isFS) *isFS = true;
-        return s; // 通常のファイルシステムパス
+        return sz; // 通常のファイルシステムパス
     }
-    if (SUCCEEDED(SHGetNameFromIDList(pidl, SIGDN_DESKTOPABSOLUTEPARSING, &psz)) && psz){
-        std::wstring s(psz); CoTaskMemFree(psz);
+
+    LPSTR psz = nullptr;
+    if (SUCCEEDED(SHGetNameFromIDListA(pidl, SIGDN_DESKTOPABSOLUTEPARSING, &psz)) && psz){
+        std::string s(psz);
+        CoTaskMemFree(psz);
         if (isFS) *isFS = false;
-        return s; // 仮想フォルダは ::{GUID}\... 等
+        return s; // 仮想フォルダなど
     }
     if (isFS) *isFS = false;
-    return L"";
+    return "";
 }
 
-static std::wstring GetCurrentFolderViaBrowser(IWebBrowser2* wb, bool* isFS){
+// IWebBrowser2 から現在フォルダを取得（ANSI版）
+static std::string GetCurrentFolderViaBrowser(IWebBrowser2* wb, bool* isFS){
     *isFS = false;
     IServiceProvider* sp = nullptr;
-    if (FAILED(wb->QueryInterface(IID_IServiceProvider, (void**)&sp))) return L"";
+    if (FAILED(wb->QueryInterface(IID_IServiceProvider, (void**)&sp))) return "";
     IShellBrowser* sb = nullptr;
     HRESULT hr = sp->QueryService(SID_STopLevelBrowser, IID_PPV_ARGS(&sb));
     SafeRelease(sp);
-    if (FAILED(hr)) return L""; // Explorer でなければ失敗
+    if (FAILED(hr)) return "";
 
     IShellView* sv = nullptr;
-    if (FAILED(sb->QueryActiveShellView(&sv))){ SafeRelease(sb); return L""; }
+    if (FAILED(sb->QueryActiveShellView(&sv))){ SafeRelease(sb); return ""; }
     IFolderView* fv = nullptr;
-    if (FAILED(sv->QueryInterface(IID_PPV_ARGS(&fv)))){ SafeRelease(sv); SafeRelease(sb); return L""; }
+    if (FAILED(sv->QueryInterface(IID_PPV_ARGS(&fv)))){ SafeRelease(sv); SafeRelease(sb); return ""; }
     IShellFolder* sf = nullptr;
-    if (FAILED(fv->GetFolder(IID_PPV_ARGS(&sf)))){ SafeRelease(fv); SafeRelease(sv); SafeRelease(sb); return L""; }
+    if (FAILED(fv->GetFolder(IID_PPV_ARGS(&sf)))){ SafeRelease(fv); SafeRelease(sv); SafeRelease(sb); return ""; }
 
-    std::wstring out;
+    std::string out;
     IPersistFolder2* pf2 = nullptr;
     if (SUCCEEDED(sf->QueryInterface(IID_PPV_ARGS(&pf2)))){
         PIDLIST_ABSOLUTE pidl = nullptr;
@@ -71,27 +79,28 @@ static std::wstring GetCurrentFolderViaBrowser(IWebBrowser2* wb, bool* isFS){
     }
     SafeRelease(sf); SafeRelease(fv); SafeRelease(sv); SafeRelease(sb);
 
-    // 失敗時のフォールバック（URL→パス解決）
+    // URL→パス解決のフォールバック
     if (out.empty()){
         BSTR b = nullptr;
         if (SUCCEEDED(wb->get_LocationURL(&b)) && b){
-            std::wstring url(b, SysStringLen(b)); SysFreeString(b);
+            _bstr_t bt(b, false);
+            std::string url = (const char*)bt;
             auto path = UrlToPath(url);
             if (!path.empty()){ *isFS = true; return path; }
-            return url; // shell: 等のURL
+            return url;
         }
     }
     return out;
 }
 
 int main(){
-    // wprintf(L"Hello\n");
-    // SetConsoleOutputCP(CP_UTF8);
     CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
 
     IShellWindows* sw = nullptr;
     if (FAILED(CoCreateInstance(CLSID_ShellWindows, nullptr, CLSCTX_ALL, IID_PPV_ARGS(&sw)))){
-        wprintf(L"IShellWindows 取得失敗\n"); CoUninitialize(); return 1;
+        printf("IShellWindows 取得失敗\n"); 
+        CoUninitialize(); 
+        return 1;
     }
 
     LONG count=0; sw->get_Count(&count);
@@ -101,11 +110,11 @@ int main(){
         if (S_OK == sw->Item(v, &disp) && disp){
             IWebBrowser2* wb = nullptr;
             if (SUCCEEDED(disp->QueryInterface(IID_PPV_ARGS(&wb)))){
-                // Explorer かどうかを SID_STopLevelBrowser で判定
                 IServiceProvider* sp=nullptr; IShellBrowser* sb=nullptr;
                 bool isExplorer=false;
                 if (SUCCEEDED(wb->QueryInterface(IID_PPV_ARGS(&sp)))){
-                    if (SUCCEEDED(sp->QueryService(SID_STopLevelBrowser, IID_PPV_ARGS(&sb)))) isExplorer=true;
+                    if (SUCCEEDED(sp->QueryService(SID_STopLevelBrowser, IID_PPV_ARGS(&sb)))) 
+                        isExplorer=true;
                 }
                 SafeRelease(sb); SafeRelease(sp);
                 if (isExplorer){
@@ -117,14 +126,13 @@ int main(){
                     bool isFS=false;
                     auto cur = GetCurrentFolderViaBrowser(wb, &isFS);
 
-                    BSTR burl=nullptr; std::wstring url;
+                    BSTR burl=nullptr; std::string url;
                     if (SUCCEEDED(wb->get_LocationURL(&burl)) && burl){
-                        url.assign(burl, SysStringLen(burl)); SysFreeString(burl);
+                        _bstr_t bt(burl, false);
+                        url = (const char*)bt;
                     }
-                    wprintf(L"#%ld hwnd=0x%p\n  URL: %ls\n  Path: %ls%ls\n",
-                        i, hwnd, url.c_str(), cur.c_str(), isFS? L"" : L"  (virtual)");
-                    // wprintf(L"#%ld hwnd=0x%p\n  URL: %s\n  Path: %s%s\n",
-                    //     i, hwnd, url.c_str(), cur.c_str(), isFS? L"" : L"  (virtual)");
+                    printf("#%ld hwnd=0x%p\n  URL: %s\n  Path: %s%s\n",
+                        i, hwnd, url.c_str(), cur.c_str(), isFS? "" : "  (virtual)");
                 }
                 wb->Release();
             }
