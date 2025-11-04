@@ -1,9 +1,6 @@
 // list_explorer_tabs_mb.cpp (MinGW-w64 / C++17)
 // g++ list_explorer_tabs_mb.cpp -std=c++17 -O0 -lole32 -loleaut32 -lshell32 -lshlwapi -luuid
 
-// ★ UNICODE 定義を削除してマルチバイト版にする
-#undef UNICODE
-#undef _UNICODE
 #define _WIN32_IE 0x0700
 
 #include <windows.h>
