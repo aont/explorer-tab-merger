@@ -14,7 +14,6 @@
 
 #include <vector>
 #include <string>
-#include <set>
 #include <algorithm>
 #include <iostream>
 #include <iomanip>
@@ -26,17 +25,6 @@ struct TabInfo {
     std::string url;
     HWND topLevel;
 };
-
-static uintptr_t GetBrowserUnknownPointer(IWebBrowser2* browser) {
-    if (!browser) return 0;
-    IUnknown* unk = nullptr;
-    uintptr_t value = 0;
-    if (SUCCEEDED(browser->QueryInterface(IID_IUnknown, (void**)&unk)) && unk) {
-        value = reinterpret_cast<uintptr_t>(unk);
-        unk->Release();
-    }
-    return value;
-}
 
 // --- Helpers for BSTR/ANSI ---
 static BSTR AnsiToBSTR(const char* s) {
@@ -148,11 +136,9 @@ static bool CollectExplorerTabs(std::vector<TabInfo>& tabs, std::vector<HWND>& w
             windowOrder.push_back(topLevel);
         }
 
-        uintptr_t unkPtr = GetBrowserUnknownPointer(pWB);
         std::cout << "[debug] Explorer tab found: top-level HWND=0x" << std::hex << std::setw(0)
                   << reinterpret_cast<uintptr_t>(topLevel)
                   << ", IWebBrowser2=" << pWB
-                  << ", IUnknown=0x" << unkPtr
                   << ", URL=" << url << std::dec << "\n";
 
         tabs.push_back({ pWB, url, topLevel });
@@ -188,26 +174,23 @@ static HWND FindShellTabHost(HWND topLevel) {
 }
 
 // --- Create new tab in the first window and navigate ---
-static bool CreateTabAndNavigate(HWND firstWindow, HWND tabHost, const std::string& url, std::set<uintptr_t>& knownTabs) {
+static bool CreateTabAndNavigate(HWND firstWindow, HWND tabHost, const std::string& url, size_t& knownTabCount) {
     if (!firstWindow || !tabHost || url.empty()) return false;
 
-    std::set<uintptr_t> baseline = knownTabs;
+    size_t baselineCount = knownTabCount;
     {
         std::vector<TabInfo> beforeTabs;
         std::vector<HWND> beforeWindows;
         if (CollectExplorerTabs(beforeTabs, beforeWindows)) {
+            size_t currentCount = 0;
             for (auto& t : beforeTabs) {
                 if (t.topLevel == firstWindow) {
-                    uintptr_t key = GetBrowserUnknownPointer(t.browser);
-                    if (key) {
-                        std::cout << "[debug] Baseline tab in first window: HWND=0x" << std::hex
-                                  << reinterpret_cast<uintptr_t>(t.topLevel)
-                                  << ", IUnknown=0x" << key << std::dec << "\n";
-                        baseline.insert(key);
-                        knownTabs.insert(key);
-                    }
+                    ++currentCount;
                 }
             }
+            baselineCount = currentCount;
+            knownTabCount = currentCount;
+            std::cout << "[debug] Baseline tab count for first window: " << baselineCount << "\n";
         }
         for (auto& t : beforeTabs) {
             if (t.browser) t.browser->Release();
@@ -231,48 +214,45 @@ static bool CreateTabAndNavigate(HWND firstWindow, HWND tabHost, const std::stri
             continue;
         }
 
-        IWebBrowser2* newBrowser = nullptr;
-        uintptr_t newKey = 0;
-        HRESULT navHr = E_FAIL;
-
+        std::vector<TabInfo*> firstWindowTabs;
         for (auto& t : tabs) {
-            if (t.topLevel != firstWindow) continue;
-            uintptr_t key = GetBrowserUnknownPointer(t.browser);
-            if (!key) continue;
-
-            std::cout << "[debug] Inspecting tab during navigation: HWND=0x" << std::hex
-                      << reinterpret_cast<uintptr_t>(t.topLevel)
-                      << ", IUnknown=0x" << key << std::dec << "\n";
-
-            if (baseline.find(key) == baseline.end()) {
-                newBrowser = t.browser;
-                newKey = key;
-                std::cout << "[debug] Identified new tab for navigation: HWND=0x" << std::hex
-                          << reinterpret_cast<uintptr_t>(t.topLevel)
-                          << ", IUnknown=0x" << newKey << std::dec
-                          << ", URL=" << url << "\n";
-                navHr = NavigateBrowser(newBrowser, url);
-                break;
+            if (t.topLevel == firstWindow) {
+                firstWindowTabs.push_back(&t);
             }
         }
 
-        for (auto& t : tabs) {
-            if (!newBrowser || t.browser != newBrowser) {
-                if (t.browser) t.browser->Release();
-            }
-        }
+        size_t currentCount = firstWindowTabs.size();
+        if (currentCount > baselineCount && !firstWindowTabs.empty()) {
+            TabInfo* newestTab = firstWindowTabs.back();
+            IWebBrowser2* newBrowser = newestTab->browser;
+            std::cout << "[debug] Identified new tab by count increase (" << baselineCount
+                      << " -> " << currentCount << ") in HWND=0x" << std::hex
+                      << reinterpret_cast<uintptr_t>(firstWindow) << std::dec << "\n";
 
-        if (newBrowser) {
+            HRESULT navHr = NavigateBrowser(newBrowser, url);
+
+            for (auto& t : tabs) {
+                if (t.browser && t.browser != newBrowser) {
+                    t.browser->Release();
+                }
+            }
+
             if (SUCCEEDED(navHr)) {
-                knownTabs.insert(newKey);
-                std::cout << "[debug] Navigation succeeded for tab IUnknown=0x" << std::hex
-                          << newKey << std::dec << "\n";
-                baseline.insert(newKey);
+                knownTabCount = currentCount;
+                baselineCount = currentCount;
+                std::cout << "[debug] Navigation succeeded for new tab.\n";
                 newBrowser->Release();
                 return true;
             }
+
             newBrowser->Release();
             return false;
+        }
+
+        for (auto& t : tabs) {
+            if (t.browser) {
+                t.browser->Release();
+            }
         }
 
         Sleep(retryMs);
@@ -305,25 +285,22 @@ int main() {
     }
 
     HWND firstWindow = windowOrder.front();
-    std::set<uintptr_t> knownTabs;
+    size_t knownTabCount = 0;
     std::vector<std::string> urlsToMerge;
     std::vector<HWND> windowsToClose;
 
     for (auto& t : tabs) {
-        uintptr_t key = GetBrowserUnknownPointer(t.browser);
         if (t.topLevel == firstWindow) {
-            if (key) {
-                std::cout << "[debug] Known tab in first window on startup: HWND=0x" << std::hex
-                          << reinterpret_cast<uintptr_t>(t.topLevel)
-                          << ", IUnknown=0x" << key << std::dec << "\n";
-                knownTabs.insert(key);
-            }
+            ++knownTabCount;
+            std::cout << "[debug] Known tab in first window on startup: HWND=0x" << std::hex
+                      << reinterpret_cast<uintptr_t>(t.topLevel)
+                      << ", IWebBrowser2=" << t.browser << std::dec << "\n";
         } else {
             if (!t.url.empty()) {
                 urlsToMerge.push_back(t.url);
                 std::cout << "[debug] Tab queued for merge: HWND=0x" << std::hex
                           << reinterpret_cast<uintptr_t>(t.topLevel)
-                          << ", IUnknown=0x" << key << std::dec
+                          << ", IWebBrowser2=" << t.browser << std::dec
                           << ", URL=" << t.url << "\n";
             }
             if (std::find(windowsToClose.begin(), windowsToClose.end(), t.topLevel) == windowsToClose.end()) {
@@ -353,7 +330,7 @@ int main() {
 
     size_t successCount = 0;
     for (const auto& url : urlsToMerge) {
-        if (CreateTabAndNavigate(firstWindow, tabHost, url, knownTabs)) {
+        if (CreateTabAndNavigate(firstWindow, tabHost, url, knownTabCount)) {
             ++successCount;
         } else {
             std::cerr << "[warn] Failed to create tab for: " << url << "\n";
