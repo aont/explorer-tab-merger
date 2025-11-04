@@ -26,6 +26,17 @@ struct TabInfo {
     HWND topLevel;
 };
 
+static uintptr_t GetBrowserUnknownPointer(IWebBrowser2* browser) {
+    if (!browser) return 0;
+    IUnknown* unk = nullptr;
+    uintptr_t value = 0;
+    if (SUCCEEDED(browser->QueryInterface(IID_IUnknown, (void**)&unk)) && unk) {
+        value = reinterpret_cast<uintptr_t>(unk);
+        unk->Release();
+    }
+    return value;
+}
+
 // --- Helpers for BSTR/ANSI ---
 static BSTR AnsiToBSTR(const char* s) {
     if (!s) return nullptr;
@@ -172,43 +183,77 @@ static HWND FindShellTabHost(HWND topLevel) {
 static bool CreateTabAndNavigate(HWND firstWindow, HWND tabHost, const std::string& url, std::set<uintptr_t>& knownTabs) {
     if (!firstWindow || !tabHost || url.empty()) return false;
 
+    std::set<uintptr_t> baseline = knownTabs;
+    {
+        std::vector<TabInfo> beforeTabs;
+        std::vector<HWND> beforeWindows;
+        if (CollectExplorerTabs(beforeTabs, beforeWindows)) {
+            for (auto& t : beforeTabs) {
+                if (t.topLevel == firstWindow) {
+                    uintptr_t key = GetBrowserUnknownPointer(t.browser);
+                    if (key) {
+                        baseline.insert(key);
+                        knownTabs.insert(key);
+                    }
+                }
+            }
+        }
+        for (auto& t : beforeTabs) {
+            if (t.browser) t.browser->Release();
+        }
+    }
+
     SendMessageA(tabHost, WM_COMMAND, (WPARAM)WM_COMMAND_ID_NEW_TAB, 0);
 
     const DWORD timeoutMs = 8000;
-    const DWORD stepMs = 100;
+    const DWORD retryMs = 300;
     DWORD waited = 0;
 
-    while (waited < timeoutMs) {
-        Sleep(stepMs);
-
+    while (waited <= timeoutMs) {
         std::vector<TabInfo> tabs;
         std::vector<HWND> windows;
         if (!CollectExplorerTabs(tabs, windows)) {
-            waited += stepMs;
+            Sleep(retryMs);
+            waited += retryMs;
             continue;
         }
 
-        bool done = false;
+        IWebBrowser2* newBrowser = nullptr;
+        uintptr_t newKey = 0;
+        HRESULT navHr = E_FAIL;
+
         for (auto& t : tabs) {
-            if (t.topLevel == firstWindow) {
-                uintptr_t key = reinterpret_cast<uintptr_t>(t.browser);
-                if (knownTabs.find(key) == knownTabs.end()) {
-                    HRESULT hr = NavigateBrowser(t.browser, url);
-                    if (SUCCEEDED(hr)) {
-                        knownTabs.insert(key);
-                        done = true;
-                    }
-                    break;
-                }
+            if (t.topLevel != firstWindow) continue;
+            uintptr_t key = GetBrowserUnknownPointer(t.browser);
+            if (!key) continue;
+
+            if (baseline.find(key) == baseline.end()) {
+                newBrowser = t.browser;
+                newKey = key;
+                navHr = NavigateBrowser(newBrowser, url);
+                break;
             }
         }
 
         for (auto& t : tabs) {
-            if (t.browser) t.browser->Release();
+            if (!newBrowser || t.browser != newBrowser) {
+                if (t.browser) t.browser->Release();
+            }
         }
 
-        if (done) return true;
-        waited += stepMs;
+        if (newBrowser) {
+            if (SUCCEEDED(navHr)) {
+                knownTabs.insert(newKey);
+                baseline.insert(newKey);
+                newBrowser->Release();
+                return true;
+            }
+            newBrowser->Release();
+            return false;
+        }
+
+        Sleep(retryMs);
+        waited += retryMs;
     }
 
     return false;
@@ -242,9 +287,11 @@ int main() {
     std::vector<HWND> windowsToClose;
 
     for (auto& t : tabs) {
-        uintptr_t key = reinterpret_cast<uintptr_t>(t.browser);
+        uintptr_t key = GetBrowserUnknownPointer(t.browser);
         if (t.topLevel == firstWindow) {
-            knownTabs.insert(key);
+            if (key) {
+                knownTabs.insert(key);
+            }
         } else {
             if (!t.url.empty()) {
                 urlsToMerge.push_back(t.url);
