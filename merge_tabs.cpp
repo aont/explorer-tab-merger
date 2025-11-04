@@ -17,6 +17,7 @@
 #include <set>
 #include <algorithm>
 #include <iostream>
+#include <iomanip>
 
 static const UINT WM_COMMAND_ID_NEW_TAB = 0xA21B; // same as newtab.cpp (undocumented)
 
@@ -147,6 +148,13 @@ static bool CollectExplorerTabs(std::vector<TabInfo>& tabs, std::vector<HWND>& w
             windowOrder.push_back(topLevel);
         }
 
+        uintptr_t unkPtr = GetBrowserUnknownPointer(pWB);
+        std::cout << "[debug] Explorer tab found: top-level HWND=0x" << std::hex << std::setw(0)
+                  << reinterpret_cast<uintptr_t>(topLevel)
+                  << ", IWebBrowser2=" << pWB
+                  << ", IUnknown=0x" << unkPtr
+                  << ", URL=" << url << std::dec << "\n";
+
         tabs.push_back({ pWB, url, topLevel });
     }
 
@@ -192,6 +200,9 @@ static bool CreateTabAndNavigate(HWND firstWindow, HWND tabHost, const std::stri
                 if (t.topLevel == firstWindow) {
                     uintptr_t key = GetBrowserUnknownPointer(t.browser);
                     if (key) {
+                        std::cout << "[debug] Baseline tab in first window: HWND=0x" << std::hex
+                                  << reinterpret_cast<uintptr_t>(t.topLevel)
+                                  << ", IUnknown=0x" << key << std::dec << "\n";
                         baseline.insert(key);
                         knownTabs.insert(key);
                     }
@@ -203,6 +214,8 @@ static bool CreateTabAndNavigate(HWND firstWindow, HWND tabHost, const std::stri
         }
     }
 
+    std::cout << "[debug] Sending WM_COMMAND to create new tab in HWND=0x" << std::hex
+              << reinterpret_cast<uintptr_t>(tabHost) << std::dec << "\n";
     SendMessageA(tabHost, WM_COMMAND, (WPARAM)WM_COMMAND_ID_NEW_TAB, 0);
 
     const DWORD timeoutMs = 8000;
@@ -227,9 +240,17 @@ static bool CreateTabAndNavigate(HWND firstWindow, HWND tabHost, const std::stri
             uintptr_t key = GetBrowserUnknownPointer(t.browser);
             if (!key) continue;
 
+            std::cout << "[debug] Inspecting tab during navigation: HWND=0x" << std::hex
+                      << reinterpret_cast<uintptr_t>(t.topLevel)
+                      << ", IUnknown=0x" << key << std::dec << "\n";
+
             if (baseline.find(key) == baseline.end()) {
                 newBrowser = t.browser;
                 newKey = key;
+                std::cout << "[debug] Identified new tab for navigation: HWND=0x" << std::hex
+                          << reinterpret_cast<uintptr_t>(t.topLevel)
+                          << ", IUnknown=0x" << newKey << std::dec
+                          << ", URL=" << url << "\n";
                 navHr = NavigateBrowser(newBrowser, url);
                 break;
             }
@@ -244,6 +265,8 @@ static bool CreateTabAndNavigate(HWND firstWindow, HWND tabHost, const std::stri
         if (newBrowser) {
             if (SUCCEEDED(navHr)) {
                 knownTabs.insert(newKey);
+                std::cout << "[debug] Navigation succeeded for tab IUnknown=0x" << std::hex
+                          << newKey << std::dec << "\n";
                 baseline.insert(newKey);
                 newBrowser->Release();
                 return true;
@@ -290,11 +313,18 @@ int main() {
         uintptr_t key = GetBrowserUnknownPointer(t.browser);
         if (t.topLevel == firstWindow) {
             if (key) {
+                std::cout << "[debug] Known tab in first window on startup: HWND=0x" << std::hex
+                          << reinterpret_cast<uintptr_t>(t.topLevel)
+                          << ", IUnknown=0x" << key << std::dec << "\n";
                 knownTabs.insert(key);
             }
         } else {
             if (!t.url.empty()) {
                 urlsToMerge.push_back(t.url);
+                std::cout << "[debug] Tab queued for merge: HWND=0x" << std::hex
+                          << reinterpret_cast<uintptr_t>(t.topLevel)
+                          << ", IUnknown=0x" << key << std::dec
+                          << ", URL=" << t.url << "\n";
             }
             if (std::find(windowsToClose.begin(), windowsToClose.end(), t.topLevel) == windowsToClose.end()) {
                 windowsToClose.push_back(t.topLevel);
