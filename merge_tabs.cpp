@@ -49,7 +49,7 @@ public:
         }
     }
 
-    ~ShellWindowsEventSink() override {
+    ~ShellWindowsEventSink() {
         std::lock_guard<std::mutex> lock(m_mutex);
         if (m_capturedBrowser) {
             m_capturedBrowser->Release();
@@ -503,6 +503,49 @@ static bool CreateTabAndNavigate(HWND firstWindow, HWND tabHost, const std::stri
     bool captured = sink->WaitForNewTab(timeoutMs, &newBrowser);
 
     bool result = false;
+    if (!captured || !newBrowser) {
+        if (newBrowser) {
+            newBrowser->Release();
+            newBrowser = nullptr;
+        }
+        std::cerr << "[warn] Timed out waiting for WindowRegistered event. Falling back to polling.\n";
+
+        const DWORD pollIntervalMs = 200;
+        ULONGLONG startTick = GetTickCount64();
+        while (GetTickCount64() - startTick < timeoutMs) {
+            std::vector<TabInfo> pollTabs;
+            std::vector<HWND> pollWindows;
+            if (CollectExplorerTabsFromShellWindows(pSW, pollTabs, pollWindows)) {
+                for (auto& t : pollTabs) {
+                    if (t.topLevel == firstWindow) {
+                        uintptr_t key = GetBrowserUnknownPointer(t.browser);
+                        if (key && baseline.find(key) == baseline.end()) {
+                            newBrowser = t.browser;
+                            newBrowser->AddRef();
+                            captured = true;
+                            for (auto& releaseTab : pollTabs) {
+                                if (releaseTab.browser) releaseTab.browser->Release();
+                            }
+                            break;
+                        }
+                    }
+                }
+                if (!captured) {
+                    for (auto& releaseTab : pollTabs) {
+                        if (releaseTab.browser) releaseTab.browser->Release();
+                    }
+                }
+            }
+
+            if (captured && newBrowser) {
+                std::cout << "[debug] Fallback polling captured new tab instance.\n";
+                break;
+            }
+
+            Sleep(pollIntervalMs);
+        }
+    }
+
     if (captured && newBrowser) {
         uintptr_t newKey = GetBrowserUnknownPointer(newBrowser);
         if (newKey && baseline.find(newKey) == baseline.end()) {
@@ -526,7 +569,7 @@ static bool CreateTabAndNavigate(HWND firstWindow, HWND tabHost, const std::stri
         }
         newBrowser->Release();
     } else {
-        std::cerr << "[warn] Timed out waiting for WindowRegistered event.\n";
+        std::cerr << "[warn] Failed to detect the new tab after polling.\n";
     }
 
     if (adviseCookie) {
