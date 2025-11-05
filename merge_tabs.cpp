@@ -26,6 +26,104 @@ struct TabInfo {
     HWND topLevel;
 };
 
+static bool GetDispatchProperty(IDispatch* disp, const wchar_t* name, VARIANT* result) {
+    if (!disp || !name || !result) return false;
+    VariantInit(result);
+    LPOLESTR names[1];
+    names[0] = const_cast<LPOLESTR>(name);
+    DISPID dispid = 0;
+    HRESULT hr = disp->GetIDsOfNames(IID_NULL, names, 1, LOCALE_USER_DEFAULT, &dispid);
+    if (FAILED(hr)) {
+        return false;
+    }
+    DISPPARAMS params{};
+    hr = disp->Invoke(dispid, IID_NULL, LOCALE_USER_DEFAULT, DISPATCH_PROPERTYGET, &params, result, nullptr, nullptr);
+    if (FAILED(hr)) {
+        VariantClear(result);
+        return false;
+    }
+    return true;
+}
+
+static std::string ExtractExplorerUrl(IWebBrowser2* wb) {
+    if (!wb) return std::string();
+
+    std::string url;
+    BSTR bUrl = nullptr;
+    if (SUCCEEDED(wb->get_LocationURL(&bUrl)) && bUrl) {
+        url = BSTRtoAnsi(bUrl);
+        SysFreeString(bUrl);
+    }
+
+    if (!url.empty()) {
+        return url;
+    }
+
+    IDispatch* doc = nullptr;
+    if (FAILED(wb->get_Document(&doc)) || !doc) {
+        return url;
+    }
+
+    VARIANT vFolder;
+    if (!GetDispatchProperty(doc, L"Folder", &vFolder)) {
+        doc->Release();
+        return url;
+    }
+
+    IDispatch* folder = nullptr;
+    if (vFolder.vt == VT_DISPATCH && vFolder.pdispVal) {
+        folder = vFolder.pdispVal;
+        folder->AddRef();
+    }
+    VariantClear(&vFolder);
+
+    if (!folder) {
+        doc->Release();
+        return url;
+    }
+
+    VARIANT vSelf;
+    if (!GetDispatchProperty(folder, L"Self", &vSelf)) {
+        folder->Release();
+        doc->Release();
+        return url;
+    }
+
+    IDispatch* selfDisp = nullptr;
+    if (vSelf.vt == VT_DISPATCH && vSelf.pdispVal) {
+        selfDisp = vSelf.pdispVal;
+        selfDisp->AddRef();
+    }
+    VariantClear(&vSelf);
+
+    if (!selfDisp) {
+        folder->Release();
+        doc->Release();
+        return url;
+    }
+
+    VARIANT vPath;
+    if (GetDispatchProperty(selfDisp, L"Path", &vPath)) {
+        if (vPath.vt == VT_BSTR && vPath.bstrVal) {
+            std::string path = BSTRtoAnsi(vPath.bstrVal);
+            if (!path.empty()) {
+                if (path.rfind("::", 0) == 0) {
+                    url = "shell:" + path;
+                } else if (path.rfind("shell::", 0) == 0) {
+                    url = path;
+                }
+            }
+        }
+        VariantClear(&vPath);
+    }
+
+    selfDisp->Release();
+    folder->Release();
+    doc->Release();
+
+    return url;
+}
+
 // --- Helpers for BSTR/ANSI ---
 static BSTR AnsiToBSTR(const char* s) {
     if (!s) return nullptr;
@@ -125,12 +223,7 @@ static bool CollectExplorerTabs(std::vector<TabInfo>& tabs, std::vector<HWND>& w
             continue;
         }
 
-        BSTR bUrl = nullptr;
-        std::string url;
-        if (SUCCEEDED(pWB->get_LocationURL(&bUrl)) && bUrl) {
-            url = BSTRtoAnsi(bUrl);
-            SysFreeString(bUrl);
-        }
+        std::string url = ExtractExplorerUrl(pWB);
 
         if (std::find(windowOrder.begin(), windowOrder.end(), topLevel) == windowOrder.end()) {
             windowOrder.push_back(topLevel);

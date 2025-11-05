@@ -80,6 +80,35 @@ def navigate_browser(wb, url: str) -> bool:
 
 
 # ---- Enumerate Explorer tabs ----
+def get_explorer_tab_url(wb) -> str:
+    """Return a URL suitable for Navigate2, handling virtual folders."""
+    url = ""
+    try:
+        url = bstr_to_ansi(getattr(wb, "LocationURL", ""))
+    except Exception:
+        url = ""
+
+    url = (url or "").strip()
+    if url:
+        return url
+
+    # Fallback for virtual folders (e.g. This PC, Control Panel, etc.).
+    try:
+        doc = getattr(wb, "Document", None)
+        folder = getattr(doc, "Folder", None) if doc is not None else None
+        folder_self = getattr(folder, "Self", None) if folder is not None else None
+        path = bstr_to_ansi(getattr(folder_self, "Path", "")) if folder_self is not None else ""
+        path = path.strip()
+        if path.startswith("::"):
+            return "shell:" + path
+        if path.startswith("shell::"):
+            return path
+    except Exception as e:
+        print(f"[warn] Failed to resolve virtual folder URL: {e}")
+
+    return ""
+
+
 def collect_explorer_tabs() -> Tuple[List[TabInfo], List[int]]:
     """
     Enumerate all ShellWindows and keep only File Explorer instances.
@@ -114,11 +143,7 @@ def collect_explorer_tabs() -> Tuple[List[TabInfo], List[int]]:
             # Reproducing IServiceProvider→IShellBrowser check strictly is hard in pywin32.
             # Instead, use class-name filtering and LocationURL presence as a practical substitute.
             # (Edge/IE normally won't appear here; even if they did, tabs with URL behave similarly.)
-            url = ""
-            try:
-                url = bstr_to_ansi(getattr(wb, "LocationURL", "")).strip()
-            except Exception:
-                pass
+            url = get_explorer_tab_url(wb)
 
             if hwnd not in window_order:
                 window_order.append(hwnd)
