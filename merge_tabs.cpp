@@ -1,5 +1,5 @@
 // merge_tabs.cpp - Merge Explorer tabs into the first window (ANSI, MinGW-w64 friendly)
-// Build: g++ merge_tabs.cpp -std=c++17 -lole32 -loleaut32 -lshell32 -lshlwapi -luuid -luser32
+// Build: g++ merge_tabs.cpp -std=c++17 -lole32 -loleaut32 -lshell32 -lshlwapi -luuid -luser32 -o merge_tabs.exe
 
 #define _WIN32_IE 0x0700
 #define _WIN32_DCOM
@@ -19,6 +19,8 @@
 #include <iomanip>
 
 static const UINT WM_COMMAND_ID_NEW_TAB = 0xA21B; // same as newtab.cpp (undocumented)
+
+static std::string BSTRtoAnsi(BSTR b);
 
 struct TabInfo {
     IWebBrowser2* browser; // holds one reference; caller must Release
