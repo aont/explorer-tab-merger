@@ -11,6 +11,7 @@
 #include <shldisp.h>
 #include <servprov.h>
 #include <oleauto.h>
+#include <shobjidl.h>
 
 #include <vector>
 #include <string>
@@ -22,38 +23,81 @@ static const UINT WM_COMMAND_ID_NEW_TAB = 0xA21B; // same as newtab.cpp (undocum
 
 struct TabInfo {
     IWebBrowser2* browser; // holds one reference; caller must Release
-    std::string url;
+    std::wstring navTarget;
+    std::string displayUrl;
     HWND topLevel;
 };
 
-// --- Helpers for BSTR/ANSI ---
-static BSTR AnsiToBSTR(const char* s) {
-    if (!s) return nullptr;
-    int wlen = MultiByteToWideChar(CP_ACP, 0, s, -1, nullptr, 0);
-    if (wlen <= 0) return nullptr;
-    BSTR b = SysAllocStringLen(nullptr, (UINT)(wlen - 1));
-    if (!b) return nullptr;
-    MultiByteToWideChar(CP_ACP, 0, s, -1, b, wlen);
-    return b;
+// Get parsing name from PIDL (ANSI)
+// Get parsing name from PIDL (UTF-8)
+static std::string PidlToParsingName(PCIDLIST_ABSOLUTE pidl, bool* isFS){
+    // Try normal filesystem path first (ANSI)
+    CHAR sz[MAX_PATH];
+    if (SHGetPathFromIDListA(pidl, sz)){
+        if (isFS) *isFS = true;
+        return sz; // regular filesystem path
+    }
+
+    // For virtual folders etc.: use the wide-char SHGetNameFromIDList
+    PWSTR pwsz = nullptr;
+    if (SUCCEEDED(SHGetNameFromIDList(pidl, SIGDN_DESKTOPABSOLUTEPARSING, &pwsz)) && pwsz){
+        int wlen = lstrlenW(pwsz);
+        std::string s;
+        if (wlen > 0){
+            int need = WideCharToMultiByte(CP_UTF8, 0, pwsz, wlen, nullptr, 0, nullptr, nullptr);
+            if (need > 0){
+                s.resize(need);
+                WideCharToMultiByte(CP_UTF8, 0, pwsz, wlen, s.data(), need, nullptr, nullptr);
+            }
+        }
+        CoTaskMemFree(pwsz);
+        if (isFS) *isFS = false;
+        return s; // virtual folder etc. (UTF-8)
+    }
+
+    if (isFS) *isFS = false;
+    return "";
 }
 
-static std::string BSTRtoAnsi(BSTR b) {
-    if (!b) return std::string();
-    UINT lenW = SysStringLen(b);
-    if (lenW == 0) return std::string();
-    int bytes = WideCharToMultiByte(CP_ACP, 0, b, lenW, nullptr, 0, nullptr, nullptr);
-    std::string out(bytes, '\0');
-    WideCharToMultiByte(CP_ACP, 0, b, lenW, &out[0], bytes, nullptr, nullptr);
+static std::wstring Utf8ToWide(const std::string& s) {
+    if (s.empty()) return std::wstring();
+    int len = MultiByteToWideChar(CP_UTF8, 0, s.c_str(), (int)s.size(), nullptr, 0);
+    if (len <= 0) return std::wstring();
+    std::wstring out(len, L'\0');
+    MultiByteToWideChar(CP_UTF8, 0, s.c_str(), (int)s.size(), &out[0], len);
     return out;
 }
 
-static HRESULT NavigateBrowser(IWebBrowser2* wb, const std::string& url) {
+static std::string WideToUtf8(const std::wstring& ws) {
+    if (ws.empty()) return std::string();
+    int len = WideCharToMultiByte(CP_UTF8, 0, ws.c_str(), (int)ws.size(), nullptr, 0, nullptr, nullptr);
+    if (len <= 0) return std::string();
+    std::string out(len, '\0');
+    WideCharToMultiByte(CP_UTF8, 0, ws.c_str(), (int)ws.size(), &out[0], len, nullptr, nullptr);
+    return out;
+}
+
+// --- Helpers for BSTR/ANSI ---
+static BSTR WideToBSTR(const std::wstring& s) {
+    if (s.empty()) return nullptr;
+    BSTR b = SysAllocStringLen(s.data(), (UINT)s.size());
+    return b;
+}
+
+static std::wstring BSTRtoWide(BSTR b) {
+    if (!b) return std::wstring();
+    UINT lenW = SysStringLen(b);
+    if (lenW == 0) return std::wstring();
+    return std::wstring(b, b + lenW);
+}
+
+static HRESULT NavigateBrowser(IWebBrowser2* wb, const std::wstring& url) {
     if (!wb) return E_POINTER;
     VARIANT vURL; VariantInit(&vURL);
     VARIANT vEmpty; VariantInit(&vEmpty);
 
     vURL.vt = VT_BSTR;
-    vURL.bstrVal = AnsiToBSTR(url.c_str());
+    vURL.bstrVal = WideToBSTR(url);
     if (!vURL.bstrVal) {
         VariantClear(&vURL);
         return E_OUTOFMEMORY;
@@ -101,11 +145,35 @@ static bool CollectExplorerTabs(std::vector<TabInfo>& tabs, std::vector<HWND>& w
         pDisp->Release();
 
         bool isExplorer = false;
+        std::wstring navTarget;
+        std::string displayUrl;
         IServiceProvider* sp = nullptr;
         if (SUCCEEDED(pWB->QueryInterface(IID_IServiceProvider, (void**)&sp)) && sp) {
             IShellBrowser* sb = nullptr;
             if (SUCCEEDED(sp->QueryService(SID_STopLevelBrowser, IID_PPV_ARGS(&sb))) && sb) {
                 isExplorer = true;
+                IShellView* sv = nullptr;
+                if (SUCCEEDED(sb->QueryActiveShellView(&sv)) && sv) {
+                    IFolderView* fv = nullptr;
+                    if (SUCCEEDED(sv->QueryInterface(IID_PPV_ARGS(&fv))) && fv) {
+                        IPersistFolder2* pf2 = nullptr;
+                        if (SUCCEEDED(fv->GetFolder(IID_PPV_ARGS(&pf2))) && pf2) {
+                            PIDLIST_ABSOLUTE pidl = nullptr;
+                            if (SUCCEEDED(pf2->GetCurFolder(&pidl)) && pidl) {
+                                bool isFS = false;
+                                std::string parsingName = PidlToParsingName(pidl, &isFS);
+                                if (!parsingName.empty()) {
+                                    navTarget = Utf8ToWide(parsingName);
+                                    displayUrl = parsingName;
+                                }
+                                CoTaskMemFree(pidl);
+                            }
+                            pf2->Release();
+                        }
+                        fv->Release();
+                    }
+                    sv->Release();
+                }
                 sb->Release();
             }
             sp->Release();
@@ -125,11 +193,17 @@ static bool CollectExplorerTabs(std::vector<TabInfo>& tabs, std::vector<HWND>& w
             continue;
         }
 
-        BSTR bUrl = nullptr;
-        std::string url;
-        if (SUCCEEDED(pWB->get_LocationURL(&bUrl)) && bUrl) {
-            url = BSTRtoAnsi(bUrl);
-            SysFreeString(bUrl);
+        if (navTarget.empty()) {
+            BSTR bUrl = nullptr;
+            if (SUCCEEDED(pWB->get_LocationURL(&bUrl)) && bUrl) {
+                navTarget = BSTRtoWide(bUrl);
+                SysFreeString(bUrl);
+                displayUrl = WideToUtf8(navTarget);
+            }
+        }
+
+        if (displayUrl.empty()) {
+            displayUrl = WideToUtf8(navTarget);
         }
 
         if (std::find(windowOrder.begin(), windowOrder.end(), topLevel) == windowOrder.end()) {
@@ -139,9 +213,9 @@ static bool CollectExplorerTabs(std::vector<TabInfo>& tabs, std::vector<HWND>& w
         std::cout << "[debug] Explorer tab found: top-level HWND=0x" << std::hex << std::setw(0)
                   << reinterpret_cast<uintptr_t>(topLevel)
                   << ", IWebBrowser2=" << pWB
-                  << ", URL=" << url << std::dec << "\n";
+                  << ", URL=" << displayUrl << std::dec << "\n";
 
-        tabs.push_back({ pWB, url, topLevel });
+        tabs.push_back({ pWB, navTarget, displayUrl, topLevel });
     }
 
     pSW->Release();
@@ -174,7 +248,7 @@ static HWND FindShellTabHost(HWND topLevel) {
 }
 
 // --- Create new tab in the first window and navigate ---
-static bool CreateTabAndNavigate(HWND firstWindow, HWND tabHost, const std::string& url, size_t& knownTabCount) {
+static bool CreateTabAndNavigate(HWND firstWindow, HWND tabHost, const std::wstring& url, size_t& knownTabCount) {
     if (!firstWindow || !tabHost || url.empty()) return false;
 
     size_t baselineCount = knownTabCount;
@@ -286,7 +360,7 @@ int main() {
 
     HWND firstWindow = windowOrder.front();
     size_t knownTabCount = 0;
-    std::vector<std::string> urlsToMerge;
+    std::vector<std::wstring> urlsToMerge;
     std::vector<HWND> windowsToClose;
 
     for (auto& t : tabs) {
@@ -296,12 +370,12 @@ int main() {
                       << reinterpret_cast<uintptr_t>(t.topLevel)
                       << ", IWebBrowser2=" << t.browser << std::dec << "\n";
         } else {
-            if (!t.url.empty()) {
-                urlsToMerge.push_back(t.url);
+            if (!t.navTarget.empty()) {
+                urlsToMerge.push_back(t.navTarget);
                 std::cout << "[debug] Tab queued for merge: HWND=0x" << std::hex
                           << reinterpret_cast<uintptr_t>(t.topLevel)
                           << ", IWebBrowser2=" << t.browser << std::dec
-                          << ", URL=" << t.url << "\n";
+                          << ", URL=" << t.displayUrl << "\n";
             }
             if (std::find(windowsToClose.begin(), windowsToClose.end(), t.topLevel) == windowsToClose.end()) {
                 windowsToClose.push_back(t.topLevel);
@@ -333,7 +407,7 @@ int main() {
         if (CreateTabAndNavigate(firstWindow, tabHost, url, knownTabCount)) {
             ++successCount;
         } else {
-            std::cerr << "[warn] Failed to create tab for: " << url << "\n";
+            std::cerr << "[warn] Failed to create tab for: " << WideToUtf8(url) << "\n";
         }
     }
 
