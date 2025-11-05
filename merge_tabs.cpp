@@ -6,11 +6,13 @@
 
 #include <windows.h>
 #include <shlobj.h>
+#include <shobjidl.h>
 #include <shlguid.h>
 #include <exdisp.h>
 #include <shldisp.h>
 #include <servprov.h>
 #include <oleauto.h>
+#include <shlwapi.h>
 
 #include <vector>
 #include <string>
@@ -22,7 +24,8 @@ static const UINT WM_COMMAND_ID_NEW_TAB = 0xA21B; // same as newtab.cpp (undocum
 
 struct TabInfo {
     IWebBrowser2* browser; // holds one reference; caller must Release
-    std::string url;
+    std::string parsingName;
+    std::string locationUrl;
     HWND topLevel;
 };
 
@@ -45,6 +48,60 @@ static std::string BSTRtoAnsi(BSTR b) {
     std::string out(bytes, '\0');
     WideCharToMultiByte(CP_ACP, 0, b, lenW, &out[0], bytes, nullptr, nullptr);
     return out;
+}
+
+static std::string WideToAnsi(const wchar_t* ws) {
+    if (!ws || !*ws) return std::string();
+    int bytes = WideCharToMultiByte(CP_ACP, 0, ws, -1, nullptr, 0, nullptr, nullptr);
+    if (bytes <= 0) return std::string();
+    std::string out(bytes - 1, '\0');
+    WideCharToMultiByte(CP_ACP, 0, ws, -1, &out[0], bytes, nullptr, nullptr);
+    return out;
+}
+
+static std::string GetParsingNameFromShellBrowser(IShellBrowser* sb) {
+    if (!sb) return std::string();
+
+    IShellView* sv = nullptr;
+    if (FAILED(sb->QueryActiveShellView(&sv)) || !sv) {
+        return std::string();
+    }
+
+    IFolderView* fv = nullptr;
+    HRESULT hr = sv->QueryInterface(IID_PPV_ARGS(&fv));
+    if (FAILED(hr) || !fv) {
+        sv->Release();
+        return std::string();
+    }
+
+    IPersistFolder2* pf2 = nullptr;
+    hr = fv->GetFolder(IID_PPV_ARGS(&pf2));
+    fv->Release();
+    if (FAILED(hr) || !pf2) {
+        sv->Release();
+        return std::string();
+    }
+
+    PIDLIST_ABSOLUTE pidl = nullptr;
+    hr = pf2->GetCurFolder(&pidl);
+    pf2->Release();
+    sv->Release();
+    if (FAILED(hr) || !pidl) {
+        if (pidl) {
+            CoTaskMemFree(pidl);
+        }
+        return std::string();
+    }
+
+    std::wstring buffer(32768, L'\0');
+    hr = PidlToParsingName(pidl, buffer.data(), static_cast<UINT>(buffer.size()));
+    std::string result;
+    if (SUCCEEDED(hr) && !buffer.empty() && buffer[0] != L'\0') {
+        result = WideToAnsi(buffer.data());
+    }
+
+    CoTaskMemFree(pidl);
+    return result;
 }
 
 static HRESULT NavigateBrowser(IWebBrowser2* wb, const std::string& url) {
@@ -101,11 +158,13 @@ static bool CollectExplorerTabs(std::vector<TabInfo>& tabs, std::vector<HWND>& w
         pDisp->Release();
 
         bool isExplorer = false;
+        std::string parsingName;
         IServiceProvider* sp = nullptr;
         if (SUCCEEDED(pWB->QueryInterface(IID_IServiceProvider, (void**)&sp)) && sp) {
             IShellBrowser* sb = nullptr;
             if (SUCCEEDED(sp->QueryService(SID_STopLevelBrowser, IID_PPV_ARGS(&sb))) && sb) {
                 isExplorer = true;
+                parsingName = GetParsingNameFromShellBrowser(sb);
                 sb->Release();
             }
             sp->Release();
@@ -126,9 +185,9 @@ static bool CollectExplorerTabs(std::vector<TabInfo>& tabs, std::vector<HWND>& w
         }
 
         BSTR bUrl = nullptr;
-        std::string url;
+        std::string locationUrl;
         if (SUCCEEDED(pWB->get_LocationURL(&bUrl)) && bUrl) {
-            url = BSTRtoAnsi(bUrl);
+            locationUrl = BSTRtoAnsi(bUrl);
             SysFreeString(bUrl);
         }
 
@@ -136,12 +195,15 @@ static bool CollectExplorerTabs(std::vector<TabInfo>& tabs, std::vector<HWND>& w
             windowOrder.push_back(topLevel);
         }
 
+        std::string target = !parsingName.empty() ? parsingName : locationUrl;
         std::cout << "[debug] Explorer tab found: top-level HWND=0x" << std::hex << std::setw(0)
                   << reinterpret_cast<uintptr_t>(topLevel)
                   << ", IWebBrowser2=" << pWB
-                  << ", URL=" << url << std::dec << "\n";
+                  << ", ParsingName=" << parsingName
+                  << ", LocationURL=" << locationUrl
+                  << ", Target=" << target << std::dec << "\n";
 
-        tabs.push_back({ pWB, url, topLevel });
+        tabs.push_back({ pWB, parsingName, locationUrl, topLevel });
     }
 
     pSW->Release();
@@ -296,12 +358,15 @@ int main() {
                       << reinterpret_cast<uintptr_t>(t.topLevel)
                       << ", IWebBrowser2=" << t.browser << std::dec << "\n";
         } else {
-            if (!t.url.empty()) {
-                urlsToMerge.push_back(t.url);
+            std::string navigateTarget = !t.parsingName.empty() ? t.parsingName : t.locationUrl;
+            if (!navigateTarget.empty()) {
+                urlsToMerge.push_back(navigateTarget);
                 std::cout << "[debug] Tab queued for merge: HWND=0x" << std::hex
                           << reinterpret_cast<uintptr_t>(t.topLevel)
                           << ", IWebBrowser2=" << t.browser << std::dec
-                          << ", URL=" << t.url << "\n";
+                          << ", ParsingName=" << t.parsingName
+                          << ", LocationURL=" << t.locationUrl
+                          << ", Target=" << navigateTarget << "\n";
             }
             if (std::find(windowsToClose.begin(), windowsToClose.end(), t.topLevel) == windowsToClose.end()) {
                 windowsToClose.push_back(t.topLevel);
