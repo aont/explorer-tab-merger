@@ -10,9 +10,9 @@ Explorer Tab Merger ships with both a native C++ implementation and a Python por
 ### C++ version (`merge_tabs.cpp`)
 1. Build the executable with a MinGW-w64 toolchain (or Visual C++ with equivalent libraries):
    ```bash
-   g++ merge_tabs.cpp -std=c++17 -lole32 -loleaut32 -lshell32 -lshlwapi -luuid -luser32
+   g++ merge_tabs.cpp -std=c++17 -lole32 -loleaut32 -lshell32 -lshlwapi -luuid -luser32 -o merge_tabs.exe
    ```
-2. Run the resulting binary from an elevated Command Prompt or PowerShell session while multiple Explorer windows are open:
+2. Run the resulting binary from a Command Prompt or PowerShell session while multiple Explorer windows are open:
    ```bash
    merge_tabs.exe
    ```
