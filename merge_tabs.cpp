@@ -461,7 +461,7 @@ int main() {
 
     for (HWND h : windowsToClose) {
         if (h && h != firstWindow) {
-            PostMessageA(h, WM_CLOSE, 0, 0);
+            SendMessageA(h, WM_CLOSE, 0, 0);
         }
     }
 
