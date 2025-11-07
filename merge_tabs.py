@@ -184,6 +184,24 @@ def find_shell_tab_host(top_level_hwnd: int) -> Optional[int]:
 
 
 # ---- Create a new tab & navigate ----
+def get_com_pointer_address(browser) -> Optional[int]:
+    """Return the raw pointer address for an IWebBrowser2 COM object."""
+    if browser is None:
+        return None
+    try:
+        oleobj = getattr(browser, "_oleobj_", None)
+        if oleobj is None:
+            return None
+        unk = oleobj.GetIUnknown()
+        if unk is None:
+            return None
+        address = unk.GetAddress()
+        return int(address) if address is not None else None
+    except Exception as e:
+        print(f"[warn] Failed to get COM pointer: {e}")
+        return None
+
+
 def create_tab_and_navigate(first_window_hwnd: int, tab_host_hwnd: int, url: str,
                             known_tab_count: List[int]) -> bool:
     """
@@ -192,11 +210,17 @@ def create_tab_and_navigate(first_window_hwnd: int, tab_host_hwnd: int, url: str
     if not first_window_hwnd or not tab_host_hwnd or not url:
         return False
 
-    # Refresh baseline (number of tabs in the first window)
-    before_tabs, _ = collect_explorer_tabs()
-    baseline = sum(1 for t in before_tabs if t.top_level == first_window_hwnd)
+    # Refresh baseline (number of tabs in the first window) and collect existing IWebBrowser2 pointers
+    existing_tabs, _ = collect_explorer_tabs()
+    baseline = sum(1 for t in existing_tabs if t.top_level == first_window_hwnd)
     known_tab_count[0] = baseline
     print(f"[debug] Baseline tab count for first window: {baseline}")
+
+    known_pointers = set()
+    for tab in existing_tabs:
+        ptr = get_com_pointer_address(tab.browser)
+        if ptr is not None:
+            known_pointers.add(ptr)
 
     # Send WM_COMMAND to create a new tab
     print(f"[debug] Sending WM_COMMAND to create new tab in HWND=0x{tab_host_hwnd:016X}")
@@ -207,29 +231,47 @@ def create_tab_and_navigate(first_window_hwnd: int, tab_host_hwnd: int, url: str
     waited = 0
 
     while waited <= timeout_ms:
-        tabs, windows = collect_explorer_tabs()
+        tabs, _ = collect_explorer_tabs()
         first_window_tabs = [t for t in tabs if t.top_level == first_window_hwnd]
-        current_count = len(first_window_tabs)
 
-        if current_count > baseline and first_window_tabs:
-            newest = first_window_tabs[-1]
-            wb = newest.browser
-            print(f"[debug] Identified new tab by count increase ({baseline} -> {current_count}) "
+        new_tab_info: Optional[TabInfo] = None
+        new_tab_ptr: Optional[int] = None
+        for t in first_window_tabs:
+            ptr = get_com_pointer_address(t.browser)
+            if ptr is None:
+                continue
+            if ptr not in known_pointers:
+                new_tab_info = t
+                new_tab_ptr = ptr
+                break
+
+        if new_tab_info and new_tab_ptr is not None:
+            wb = new_tab_info.browser
+            print(f"[debug] Identified new tab by COM pointer 0x{new_tab_ptr:016X} "
                   f"in HWND=0x{first_window_hwnd:016X}")
 
             ok = navigate_browser(wb, url)
 
-            # Python manages COM references; no explicit Release needed.
+            # Keep old references alive until detection is done; now they can be released.
+            existing_tabs.clear()
             del tabs[:]
             if ok:
+                current_count = len(first_window_tabs)
                 known_tab_count[0] = current_count
                 print("[debug] Navigation succeeded for new tab.")
                 return True
             return False
 
+        # Update known pointers with current enumeration to avoid rechecking the same objects
+        for t in first_window_tabs:
+            ptr = get_com_pointer_address(t.browser)
+            if ptr is not None:
+                known_pointers.add(ptr)
+
         time.sleep(retry_ms / 1000.0)
         waited += retry_ms
 
+    existing_tabs.clear()
     return False
 
 
@@ -283,7 +325,7 @@ def main():
         # Close source windows
         for h in windows_to_close:
             if h and h != first_window and IsWindow(h):
-                PostMessageA(h, win32con.WM_CLOSE, 0, 0)
+                SendMessageA(h, win32con.WM_CLOSE, 0, 0)
 
         print(f"Completed. {success} tab(s) moved.")
         return 0
