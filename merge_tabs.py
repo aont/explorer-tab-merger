@@ -283,7 +283,7 @@ def main():
         # Close source windows
         for h in windows_to_close:
             if h and h != first_window and IsWindow(h):
-                PostMessageA(h, win32con.WM_CLOSE, 0, 0)
+                SendMessageA(h, win32con.WM_CLOSE, 0, 0)
 
         print(f"Completed. {success} tab(s) moved.")
         return 0
