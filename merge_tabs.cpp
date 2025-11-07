@@ -273,23 +273,34 @@ static bool CreateTabAndNavigate(HWND firstWindow, HWND tabHost, const std::stri
     if (!firstWindow || !tabHost || url.empty()) return false;
 
     size_t baselineCount = knownTabCount;
-    {
-        std::vector<TabInfo> beforeTabs;
-        std::vector<HWND> beforeWindows;
-        if (CollectExplorerTabs(beforeTabs, beforeWindows)) {
-            size_t currentCount = 0;
-            for (auto& t : beforeTabs) {
-                if (t.topLevel == firstWindow) {
-                    ++currentCount;
-                }
+    std::vector<TabInfo> baselineTabs;
+    std::vector<HWND> beforeWindows;
+    if (CollectExplorerTabs(baselineTabs, beforeWindows)) {
+        size_t currentCount = 0;
+        for (auto& t : baselineTabs) {
+            if (t.topLevel == firstWindow) {
+                ++currentCount;
             }
-            baselineCount = currentCount;
-            knownTabCount = currentCount;
-            std::cout << "[debug] Baseline tab count for first window: " << baselineCount << "\n";
         }
-        for (auto& t : beforeTabs) {
-            if (t.browser) t.browser->Release();
+        baselineCount = currentCount;
+        knownTabCount = currentCount;
+        std::cout << "[debug] Baseline tab count for first window: " << baselineCount << "\n";
+    }
+
+    auto releaseBaselineTabs = [&baselineTabs]() {
+        for (auto& t : baselineTabs) {
+            if (t.browser) {
+                t.browser->Release();
+                t.browser = nullptr;
+            }
         }
+        baselineTabs.clear();
+    };
+
+    std::vector<IWebBrowser2*> knownBrowsers;
+    knownBrowsers.reserve(baselineTabs.size());
+    for (auto& t : baselineTabs) {
+        knownBrowsers.push_back(t.browser);
     }
 
     std::cout << "[debug] Sending WM_COMMAND to create new tab in HWND=0x" << std::hex
@@ -300,6 +311,8 @@ static bool CreateTabAndNavigate(HWND firstWindow, HWND tabHost, const std::stri
     const DWORD retryMs = 300;
     DWORD waited = 0;
 
+    bool success = false;
+
     while (waited <= timeoutMs) {
         std::vector<TabInfo> tabs;
         std::vector<HWND> windows;
@@ -309,25 +322,38 @@ static bool CreateTabAndNavigate(HWND firstWindow, HWND tabHost, const std::stri
             continue;
         }
 
-        std::vector<TabInfo*> firstWindowTabs;
+        IWebBrowser2* candidateBrowser = nullptr;
+        size_t currentCount = 0;
+
         for (auto& t : tabs) {
-            if (t.topLevel == firstWindow) {
-                firstWindowTabs.push_back(&t);
+            if (t.topLevel != firstWindow) {
+                continue;
+            }
+
+            ++currentCount;
+
+            bool isKnown = false;
+            for (auto* known : knownBrowsers) {
+                if (known == t.browser) {
+                    isKnown = true;
+                    break;
+                }
+            }
+
+            if (!isKnown && !candidateBrowser) {
+                candidateBrowser = t.browser;
             }
         }
 
-        size_t currentCount = firstWindowTabs.size();
-        if (currentCount > baselineCount && !firstWindowTabs.empty()) {
-            TabInfo* newestTab = firstWindowTabs.back();
-            IWebBrowser2* newBrowser = newestTab->browser;
-            std::cout << "[debug] Identified new tab by count increase (" << baselineCount
-                      << " -> " << currentCount << ") in HWND=0x" << std::hex
+        if (candidateBrowser && currentCount > baselineCount) {
+            std::cout << "[debug] Identified new tab by IWebBrowser2 pointer (" << candidateBrowser
+                      << ") in HWND=0x" << std::hex
                       << reinterpret_cast<uintptr_t>(firstWindow) << std::dec << "\n";
 
-            HRESULT navHr = NavigateBrowser(newBrowser, url);
+            HRESULT navHr = NavigateBrowser(candidateBrowser, url);
 
             for (auto& t : tabs) {
-                if (t.browser && t.browser != newBrowser) {
+                if (t.browser && t.browser != candidateBrowser) {
                     t.browser->Release();
                 }
             }
@@ -336,12 +362,11 @@ static bool CreateTabAndNavigate(HWND firstWindow, HWND tabHost, const std::stri
                 knownTabCount = currentCount;
                 baselineCount = currentCount;
                 std::cout << "[debug] Navigation succeeded for new tab.\n";
-                newBrowser->Release();
-                return true;
+                success = true;
             }
 
-            newBrowser->Release();
-            return false;
+            candidateBrowser->Release();
+            break;
         }
 
         for (auto& t : tabs) {
@@ -354,7 +379,9 @@ static bool CreateTabAndNavigate(HWND firstWindow, HWND tabHost, const std::stri
         waited += retryMs;
     }
 
-    return false;
+    releaseBaselineTabs();
+
+    return success;
 }
 
 int main() {
