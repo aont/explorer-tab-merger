@@ -194,7 +194,9 @@ def create_tab_and_navigate(first_window_hwnd: int, tab_host_hwnd: int, url: str
 
     # Refresh baseline (number of tabs in the first window)
     before_tabs, _ = collect_explorer_tabs()
-    baseline = sum(1 for t in before_tabs if t.top_level == first_window_hwnd)
+    baseline_tab_infos = [t for t in before_tabs if t.top_level == first_window_hwnd]
+    baseline_browsers = [t.browser for t in baseline_tab_infos]
+    baseline = len(baseline_tab_infos)
     known_tab_count[0] = baseline
     print(f"[debug] Baseline tab count for first window: {baseline}")
 
@@ -207,20 +209,35 @@ def create_tab_and_navigate(first_window_hwnd: int, tab_host_hwnd: int, url: str
     waited = 0
 
     while waited <= timeout_ms:
-        tabs, windows = collect_explorer_tabs()
+        tabs, _ = collect_explorer_tabs()
         first_window_tabs = [t for t in tabs if t.top_level == first_window_hwnd]
         current_count = len(first_window_tabs)
 
-        if current_count > baseline and first_window_tabs:
-            newest = first_window_tabs[-1]
-            wb = newest.browser
-            print(f"[debug] Identified new tab by count increase ({baseline} -> {current_count}) "
-                  f"in HWND=0x{first_window_hwnd:016X}")
+        new_tab_info = None
+        for candidate in first_window_tabs:
+            is_new = True
+            for baseline_browser in baseline_browsers:
+                try:
+                    if candidate.browser == baseline_browser:
+                        is_new = False
+                        break
+                except Exception as e:
+                    print(f"[warn] Comparison with baseline browser failed: {e}")
+            if is_new:
+                new_tab_info = candidate
+                break
+
+        if new_tab_info is not None:
+            wb = new_tab_info.browser
+            print(f"[debug] Identified new tab via IWebBrowser2 comparison in HWND=0x{first_window_hwnd:016X}")
 
             ok = navigate_browser(wb, url)
 
             # Python manages COM references; no explicit Release needed.
             del tabs[:]
+            baseline_tab_infos.clear()
+            baseline_browsers.clear()
+            before_tabs.clear()
             if ok:
                 known_tab_count[0] = current_count
                 print("[debug] Navigation succeeded for new tab.")
@@ -230,6 +247,9 @@ def create_tab_and_navigate(first_window_hwnd: int, tab_host_hwnd: int, url: str
         time.sleep(retry_ms / 1000.0)
         waited += retry_ms
 
+    baseline_tab_infos.clear()
+    baseline_browsers.clear()
+    before_tabs.clear()
     return False
 
 
