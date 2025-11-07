@@ -85,15 +85,34 @@ def ensure_comtypes_browser(obj):
 
 def com_identity_address_ctypes(obj) -> int:
     """
-    obj: comtypes のインスタンス（QueryInterface が使えるもの）
-    戻り値: IUnknown のアドレス（整数）
+    Return an address that can be used to compare COM object identity.
     """
+    if obj is None:
+        return 0
+
+    # pythoncom offers ObjectIdentity which works for PyIDispatch objects.
     try:
-        unk = obj.QueryInterface(IUnknown)
+        return int(pythoncom.ObjectIdentity(obj))
+    except Exception:
+        pass
+
+    # comtypes objects expose QueryInterface; fall back to that path.
+    try:
+        if hasattr(obj, "QueryInterface"):
+            unk = obj.QueryInterface(IUnknown)
+            return ctypes.addressof(unk)
     except Exception as e:
         print(f"[warn] QueryInterface for identity failed: {e}")
-        return 0
-    return ctypes.addressof(unk)
+
+    # As a final attempt, look for the underlying PyIDispatch via _oleobj_.
+    try:
+        ole = getattr(obj, "_oleobj_", None)
+        if ole is not None:
+            return int(pythoncom.ObjectIdentity(ole))
+    except Exception:
+        pass
+
+    return 0
 
 
 def is_same_com_object_ctypes(a, b) -> bool:
