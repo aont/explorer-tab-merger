@@ -18,6 +18,8 @@ import pythoncom
 from win32com.client import Dispatch
 import win32com.client
 import win32con
+from comtypes import IUnknown
+from comtypes.client import dynamic
 
 
 if not hasattr(wintypes, "LRESULT"):
@@ -53,11 +55,51 @@ WM_COMMAND_ID_NEW_TAB = 0xA21B  # Undocumented: same as the C++ version
 
 # ---- Data structure ----
 class TabInfo:
-    def __init__(self, browser, url: str, top_level: int):
+    def __init__(self, browser, url: str, top_level: int, identity: int):
         # browser: IWebBrowser2 COM object
         self.browser = browser
         self.url = url or ""
         self.top_level = top_level  # HWND
+        self.identity = identity
+
+
+# ---- COM identity helpers ----
+def ensure_comtypes_browser(obj):
+    """Return a comtypes-dispatch wrapper for the given COM object."""
+    if obj is None:
+        return None
+
+    if hasattr(obj, "QueryInterface"):
+        return obj
+
+    disp = getattr(obj, "_oleobj_", None)
+    if disp is None:
+        return None
+
+    try:
+        return dynamic.Dispatch(disp)
+    except Exception as e:
+        print(f"[warn] Failed to convert COM object to comtypes: {e}")
+        return None
+
+
+def com_identity_address_ctypes(obj) -> int:
+    """
+    obj: comtypes のインスタンス（QueryInterface が使えるもの）
+    戻り値: IUnknown のアドレス（整数）
+    """
+    try:
+        unk = obj.QueryInterface(IUnknown)
+    except Exception as e:
+        print(f"[warn] QueryInterface for identity failed: {e}")
+        return 0
+    return ctypes.addressof(unk)
+
+
+def is_same_com_object_ctypes(a, b) -> bool:
+    if not a or not b:
+        return False
+    return com_identity_address_ctypes(a) == com_identity_address_ctypes(b)
 
 
 # ---- Utilities ----
@@ -133,6 +175,10 @@ def collect_explorer_tabs() -> Tuple[List[TabInfo], List[int]]:
     for i in range(count):
         try:
             wb = shell_windows.Item(i)
+            wb = ensure_comtypes_browser(wb)
+            if wb is None:
+                print(f"[warn] Failed to wrap IWebBrowser2 for item {i}.")
+                continue
             # Simple filter to target Explorer only:
             # 1) HWnd is available
             # 2) LocationURL is available
@@ -145,11 +191,13 @@ def collect_explorer_tabs() -> Tuple[List[TabInfo], List[int]]:
             # (Edge/IE normally won't appear here; even if they did, tabs with URL behave similarly.)
             url = get_explorer_tab_url(wb)
 
+            identity = com_identity_address_ctypes(wb)
+
             if hwnd not in window_order:
                 window_order.append(hwnd)
 
             print(f"[debug] Explorer tab found: top-level HWND=0x{hwnd:016X}, IWebBrowser2={wb}, URL={url}")
-            tabs.append(TabInfo(wb, url, hwnd))
+            tabs.append(TabInfo(wb, url, hwnd, identity))
 
         except Exception as e:
             print(f"[warn] enumerate item {i} failed: {e}")
@@ -194,7 +242,9 @@ def create_tab_and_navigate(first_window_hwnd: int, tab_host_hwnd: int, url: str
 
     # Refresh baseline (number of tabs in the first window)
     before_tabs, _ = collect_explorer_tabs()
-    baseline = sum(1 for t in before_tabs if t.top_level == first_window_hwnd)
+    baseline_tabs = [t for t in before_tabs if t.top_level == first_window_hwnd]
+    baseline = len(baseline_tabs)
+    baseline_identities = {t.identity for t in baseline_tabs if t.identity}
     known_tab_count[0] = baseline
     print(f"[debug] Baseline tab count for first window: {baseline}")
 
@@ -207,20 +257,37 @@ def create_tab_and_navigate(first_window_hwnd: int, tab_host_hwnd: int, url: str
     waited = 0
 
     while waited <= timeout_ms:
-        tabs, windows = collect_explorer_tabs()
+        tabs, _ = collect_explorer_tabs()
         first_window_tabs = [t for t in tabs if t.top_level == first_window_hwnd]
         current_count = len(first_window_tabs)
 
-        if current_count > baseline and first_window_tabs:
-            newest = first_window_tabs[-1]
-            wb = newest.browser
-            print(f"[debug] Identified new tab by count increase ({baseline} -> {current_count}) "
-                  f"in HWND=0x{first_window_hwnd:016X}")
+        new_tab = None
+        fallback_used = False
+        for candidate in first_window_tabs:
+            if candidate.identity and candidate.identity not in baseline_identities:
+                new_tab = candidate
+                break
+
+        if new_tab is None and current_count > baseline:
+            # Fallback: if identities missing, pick the last tab.
+            if first_window_tabs:
+                new_tab = first_window_tabs[-1]
+                fallback_used = True
+
+        if new_tab is not None:
+            if new_tab.identity:
+                baseline_identities.add(new_tab.identity)
+            wb = new_tab.browser
+            if fallback_used:
+                print(f"[debug] Identified new tab by fallback count check in HWND=0x{first_window_hwnd:016X}")
+            else:
+                print(f"[debug] Identified new tab by COM identity in HWND=0x{first_window_hwnd:016X}")
 
             ok = navigate_browser(wb, url)
 
-            # Python manages COM references; no explicit Release needed.
-            del tabs[:]
+            # Keep pre-created tab references until after detection completes.
+            before_tabs.clear()
+            tabs.clear()
             if ok:
                 known_tab_count[0] = current_count
                 print("[debug] Navigation succeeded for new tab.")
@@ -230,6 +297,7 @@ def create_tab_and_navigate(first_window_hwnd: int, tab_host_hwnd: int, url: str
         time.sleep(retry_ms / 1000.0)
         waited += retry_ms
 
+    before_tabs.clear()
     return False
 
 
