@@ -352,13 +352,23 @@ static bool CreateTabAndNavigate(HWND firstWindow, HWND tabHost, const std::stri
 }
 
 static std::string NormalizeFolderPath(const std::string& input) {
-    std::string path = input;
-    for (auto& ch : path) {
-        if (ch == '/') {
-            ch = '\\';
-        }
+    if (input.empty()) {
+        return std::string();
     }
-    return path;
+
+    DWORD required = GetFullPathNameA(input.c_str(), 0, nullptr, nullptr);
+    if (required == 0) {
+        return input;
+    }
+
+    std::string fullPath(required, '\0');
+    DWORD written = GetFullPathNameA(input.c_str(), required, &fullPath[0], nullptr);
+    if (written == 0 || written >= required) {
+        return input;
+    }
+
+    fullPath.resize(written);
+    return fullPath;
 }
 
 int main(int argc, char* argv[]) {
