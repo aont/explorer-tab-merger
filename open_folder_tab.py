@@ -6,6 +6,7 @@ Usage:
     python open_folder_tab.py "C:\\Path\\To\\Folder"
 """
 
+import os
 import sys
 import time
 import ctypes
@@ -61,7 +62,7 @@ def bstr_to_ansi(bstr) -> str:
 
 
 def normalize_folder_path(path: str) -> str:
-    return path.replace("/", "\\")
+    return os.path.abspath(path)
 
 
 def navigate_browser(wb, url: str) -> bool:
