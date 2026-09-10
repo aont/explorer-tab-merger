@@ -190,7 +190,7 @@ static HRESULT navigate_browser(IWebBrowser2 *browser, const char *url) {
 
 BOOL collect_explorer_tabs(ExplorerTabList *tabs, WindowList *window_order) {
     IShellWindows *shell_windows = NULL;
-    long count = 0, i;
+    LONG count = 0, i;
     HRESULT hr;
     explorer_tab_list_free(tabs);
     window_list_free(window_order);
