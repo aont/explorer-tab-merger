@@ -1,0 +1,133 @@
+name: Build and release
+
+on:
+  push:
+    branches:
+      - main
+      - master
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.repository }}
+  cancel-in-progress: false
+
+jobs:
+  build-mingw:
+    name: Build (${{ matrix.msystem }})
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - msystem: UCRT64
+            suffix: ucrt64
+          - msystem: MINGW64
+            suffix: mingw64
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up ${{ matrix.msystem }}
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: ${{ matrix.msystem }}
+          update: true
+          install: make gcc
+
+      - name: Build executables
+        shell: msys2 {0}
+        run: |
+          make -f Makefile.mingw CC=gcc
+          mkdir -p dist
+          mv merge_tabs.exe "dist/merge_tabs-${{ matrix.suffix }}.exe"
+          mv open_folder_tab.exe "dist/open_folder_tab-${{ matrix.suffix }}.exe"
+
+      - name: Upload executables
+        uses: actions/upload-artifact@v4
+        with:
+          name: executables-${{ matrix.suffix }}
+          path: dist/*.exe
+          if-no-files-found: error
+
+  build-msvc:
+    name: Build (MSVC)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up MSVC
+        uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Build executables
+        shell: cmd
+        run: |
+          nmake /f Makefile.msvc
+          if not exist dist mkdir dist
+          move /Y merge_tabs.exe dist\merge_tabs-msvc.exe
+          move /Y open_folder_tab.exe dist\open_folder_tab-msvc.exe
+
+      - name: Upload executables
+        uses: actions/upload-artifact@v4
+        with:
+          name: executables-msvc
+          path: dist/*.exe
+          if-no-files-found: error
+
+  release:
+    name: Tag and release
+    needs:
+      - build-mingw
+      - build-msvc
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Download executables
+        uses: actions/download-artifact@v4
+        with:
+          pattern: executables-*
+          path: dist
+          merge-multiple: true
+
+      - name: Determine next version
+        id: version
+        shell: bash
+        run: |
+          latest="$({
+            git tag --list
+            printf '%s\n' v0.0.0
+          } | sed -nE '/^v[0-9]+\.[0-9]+\.[0-9]+$/p' | sort -V | tail -n 1)"
+
+          IFS=. read -r major minor patch <<< "${latest#v}"
+          if [[ "$latest" == "v0.0.0" ]] && ! git rev-parse -q --verify refs/tags/v0.0.0 >/dev/null; then
+            next=v0.0.0
+          else
+            next="v${major}.${minor}.$((patch + 1))"
+          fi
+
+          echo "tag=$next" >> "$GITHUB_OUTPUT"
+
+      - name: Create and push tag
+        shell: bash
+        env:
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git tag -a "$TAG" -m "Release $TAG"
+          git push origin "$TAG"
+
+      - name: Create GitHub release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          gh release create "$TAG" dist/*.exe \
+            --title "$TAG" \
+            --generate-notes \
+            --verify-tag
