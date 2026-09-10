@@ -27,6 +27,7 @@ typedef struct WindowList {
     size_t capacity;
 } WindowList;
 
+char *duplicate_string(const char *value);
 void explorer_tab_list_free(ExplorerTabList *tabs);
 void window_list_free(WindowList *windows);
 BOOL collect_explorer_tabs(ExplorerTabList *tabs, WindowList *window_order);

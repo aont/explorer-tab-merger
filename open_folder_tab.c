@@ -9,13 +9,13 @@ static char *normalize_folder_path(const char *input) {
     char *path;
     if (!input || !input[0]) return NULL;
     required = GetFullPathNameA(input, 0, NULL, NULL);
-    if (!required) return _strdup(input);
+    if (!required) return duplicate_string(input);
     path = (char *)malloc(required);
     if (!path) return NULL;
     written = GetFullPathNameA(input, required, path, NULL);
     if (!written || written >= required) {
         free(path);
-        return _strdup(input);
+        return duplicate_string(input);
     }
     return path;
 }

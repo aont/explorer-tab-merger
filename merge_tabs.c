@@ -17,7 +17,7 @@ static BOOL string_list_append(StringList *list, const char *value) {
     char *copy;
     if (!items) return FALSE;
     list->items = items;
-    copy = _strdup(value);
+    copy = duplicate_string(value);
     if (!copy) return FALSE;
     list->items[list->count++] = copy;
     return TRUE;

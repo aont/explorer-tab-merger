@@ -10,6 +10,22 @@
 
 #define WM_COMMAND_ID_NEW_TAB 0xA21B
 
+char *duplicate_string(const char *value) {
+#ifdef _MSC_VER
+    if (!value) return NULL;
+    return _strdup(value);
+#else
+    size_t length;
+    char *copy;
+    if (!value) return NULL;
+    length = strlen(value) + 1;
+    copy = (char *)malloc(length);
+    if (!copy) return NULL;
+    memcpy(copy, value, length);
+    return copy;
+#endif
+}
+
 static BOOL reserve_tabs(ExplorerTabList *list, size_t needed) {
     ExplorerTab *items;
     size_t capacity;
@@ -216,7 +232,7 @@ BOOL collect_explorer_tabs(ExplorerTabList *tabs, WindowList *window_order) {
         }
         top_level = (HWND)(INT_PTR)handle;
         url = extract_explorer_url(browser);
-        if (!url) url = _strdup("");
+        if (!url) url = duplicate_string("");
         if (!url || !window_list_append(window_order, top_level) || !reserve_tabs(tabs, tabs->count + 1)) {
             free(url);
             IWebBrowser2_Release(browser);
