@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
 merge_tabs.py - Merge File Explorer tabs into the first window (Python)
-Python port of the C++ merge_tabs.cpp (keeps ANSI/BSTR conversion, COM usage, and WM_COMMAND sending approach)
+Python port of merge_tabs.c (keeps ANSI/BSTR conversion, COM usage, and WM_COMMAND sending approach)
 
 Requirements:
   pip install pywin32
@@ -49,7 +49,7 @@ IsWindow = user32.IsWindow
 IsWindow.argtypes = [wintypes.HWND]
 IsWindow.restype = wintypes.BOOL
 
-WM_COMMAND_ID_NEW_TAB = 0xA21B  # Undocumented: same as the C++ version
+WM_COMMAND_ID_NEW_TAB = 0xA21B  # Undocumented: same as the C version
 
 # ---- Data structure ----
 class TabInfo:
@@ -187,7 +187,7 @@ def find_shell_tab_host(top_level_hwnd: int) -> Optional[int]:
 def create_tab_and_navigate(first_window_hwnd: int, tab_host_hwnd: int, url: str,
                             known_tab_count: List[int]) -> bool:
     """
-    known_tab_count is a one-element list to simulate pass-by-reference (C++ size_t&).
+    known_tab_count is a one-element list to simulate a C size_t pointer.
     """
     if not first_window_hwnd or not tab_host_hwnd or not url:
         return False

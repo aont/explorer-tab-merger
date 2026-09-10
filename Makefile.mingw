@@ -1,7 +1,6 @@
-CXX ?= g++
-
-CXXFLAGS ?= -O2 -Wall -Wextra
-CXXFLAGS += -std=c++17
+CC ?= gcc
+CFLAGS ?= -O2 -Wall -Wextra
+CFLAGS += -std=c11
 LDLIBS := -lole32 -loleaut32 -lshell32 -lshlwapi -luuid -luser32
 
 TARGETS := merge_tabs.exe open_folder_tab.exe
@@ -10,11 +9,11 @@ TARGETS := merge_tabs.exe open_folder_tab.exe
 
 all: $(TARGETS)
 
-merge_tabs.exe: merge_tabs.cpp
-	$(CXX) $(CXXFLAGS) $< -o $@ $(LDFLAGS) $(LDLIBS)
+merge_tabs.exe: merge_tabs.c explorer_tabs.c explorer_tabs.h
+	$(CC) $(CFLAGS) merge_tabs.c explorer_tabs.c -o $@ $(LDFLAGS) $(LDLIBS)
 
-open_folder_tab.exe: open_folder_tab.cpp
-	$(CXX) $(CXXFLAGS) $< -o $@ $(LDFLAGS) $(LDLIBS)
+open_folder_tab.exe: open_folder_tab.c explorer_tabs.c explorer_tabs.h
+	$(CC) $(CFLAGS) open_folder_tab.c explorer_tabs.c -o $@ $(LDFLAGS) $(LDLIBS)
 
 clean:
 	$(RM) $(TARGETS)
