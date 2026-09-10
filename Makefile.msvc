@@ -1,0 +1,16 @@
+CXX = cl
+CXXFLAGS = /nologo /EHsc /std:c++17 /O2 /W4
+LDLIBS = ole32.lib oleaut32.lib shell32.lib shlwapi.lib uuid.lib user32.lib
+
+TARGETS = merge_tabs.exe open_folder_tab.exe
+
+all: $(TARGETS)
+
+merge_tabs.exe: merge_tabs.cpp
+	$(CXX) $(CXXFLAGS) /Fe:$@ merge_tabs.cpp /link $(LDFLAGS) $(LDLIBS)
+
+open_folder_tab.exe: open_folder_tab.cpp
+	$(CXX) $(CXXFLAGS) /Fe:$@ open_folder_tab.cpp /link $(LDFLAGS) $(LDLIBS)
+
+clean:
+	-del /Q $(TARGETS) *.obj 2>NUL

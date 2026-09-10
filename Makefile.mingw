@@ -1,0 +1,20 @@
+CXX ?= g++
+
+CXXFLAGS ?= -O2 -Wall -Wextra
+CXXFLAGS += -std=c++17
+LDLIBS := -lole32 -loleaut32 -lshell32 -lshlwapi -luuid -luser32
+
+TARGETS := merge_tabs.exe open_folder_tab.exe
+
+.PHONY: all clean
+
+all: $(TARGETS)
+
+merge_tabs.exe: merge_tabs.cpp
+	$(CXX) $(CXXFLAGS) $< -o $@ $(LDFLAGS) $(LDLIBS)
+
+open_folder_tab.exe: open_folder_tab.cpp
+	$(CXX) $(CXXFLAGS) $< -o $@ $(LDFLAGS) $(LDLIBS)
+
+clean:
+	$(RM) $(TARGETS)

@@ -7,6 +7,21 @@ The tool automates the legacy COM automation interfaces behind File Explorer to 
 ## Implementations
 Explorer Tab Merger ships with both a native C++ implementation and a Python port. Pick whichever fits best with your tooling and deployment needs.
 
+## Build both C++ utilities
+The included makefiles build `merge_tabs.exe` and `open_folder_tab.exe` together. From a MinGW-w64 shell, run:
+
+```bash
+mingw32-make -f Makefile.mingw
+```
+
+From a Visual Studio Developer Command Prompt, run:
+
+```bat
+nmake /f Makefile.msvc
+```
+
+Append `clean` to either command to remove the generated executables (and, for MSVC, object files).
+
 ## Open a folder in a new tab
 Need to jump to a specific folder without losing your existing File Explorer window? Use the companion utilities below to create a new tab in the first open Explorer window; if none exists, the tools fall back to `ShellExecute` to launch the folder directly. Both variants accept forward slashes (`/`) or backslashes (`\`) in the folder path.
 
